@@ -81,6 +81,29 @@ export const stopAlarmLoop = () => {
   }
 };
 
+// --- Native Browser TTS Fallback ---
+export const speakFallback = (text: string) => {
+  if ('speechSynthesis' in window) {
+    // Cancel any current speaking
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    
+    // Try to select a better voice if available (async, but usually cached after first load)
+    const voices = window.speechSynthesis.getVoices();
+    // Prefer "Google US English" or "Google UK English" or any English
+    const preferredVoice = voices.find(v => v.name.includes('Google') && v.lang.includes('en')) || 
+                           voices.find(v => v.lang.includes('en'));
+    
+    if (preferredVoice) utterance.voice = preferredVoice;
+    
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+    
+    window.speechSynthesis.speak(utterance);
+  }
+};
+
 // --- PCM Audio Decoding for Gemini TTS ---
 
 function base64ToArrayBuffer(base64: string) {

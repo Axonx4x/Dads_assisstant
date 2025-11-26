@@ -2,7 +2,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Send, Bot, Mic, Volume2, VolumeX, Loader2 } from 'lucide-react';
 import { getAIAdvice, generateSpeech } from '../services/gemini';
-import { playPCM } from '../services/sound';
+import { playPCM, speakFallback } from '../services/sound';
 import { Task, Transaction, ShoppingItem } from '../types';
 
 interface AIAssistantProps {
@@ -86,9 +86,13 @@ export const AIAssistant: React.FC<AIAssistantProps> = ({ isOpen, onClose, tasks
         const audioBase64 = await generateSpeech(text);
         if (audioBase64) {
             await playPCM(audioBase64);
+        } else {
+            // Fallback to browser TTS if Gemini fails
+            speakFallback(text);
         }
       } catch (e) {
         console.error("Failed to speak", e);
+        speakFallback(text);
       } finally {
         setIsSpeaking(false);
       }

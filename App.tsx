@@ -13,7 +13,7 @@ import { Notes } from './pages/Notes';
 import { Contacts } from './pages/Contacts';
 import { AIAssistant } from './components/AIAssistant';
 import { Sparkles, BellOff, AlertTriangle, X, Volume2, Mic, Zap, Info, Loader2 } from 'lucide-react';
-import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM } from './services/sound';
+import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM, speakFallback } from './services/sound';
 
 const App: React.FC = () => {
   const [feature, setFeature] = useState<Feature>('dashboard');
@@ -114,6 +114,9 @@ const App: React.FC = () => {
                     const audio = await generateSpeech(text);
                     if (audio) {
                         await playPCM(audio);
+                    } else {
+                        // FALLBACK: Use browser TTS if Gemini fails (e.g. 403 error)
+                        speakFallback(text);
                     }
                 }
             } catch (e) {

@@ -1,5 +1,5 @@
 
-import { GoogleGenAI } from "@google/genai";
+import { GoogleGenAI, Modality } from "@google/genai";
 import { loadFromStorage, saveToStorage } from './storage';
 
 // Cache the quote for the day to save API calls and keep it consistent
@@ -10,28 +10,33 @@ interface QuoteData {
   text: string;
 }
 
-export const getDailyMotivation = async (): Promise<string> => {
-  const today = new Date().toDateString();
-  const cached = loadFromStorage<QuoteData | null>(STORAGE_KEY_QUOTE, null);
-
-  if (cached && cached.date === today) {
-    return cached.text;
-  }
-
-  // Fallback if no API key is present
+export const getDailyMotivation = async (financialContext?: string): Promise<string> => {
+  // We disable caching to ensure real-time updates for weather/finance
+  // But we fallback to a safe default if API fails
+  
   if (!process.env.API_KEY) {
-    return "Good morning, Dad! Tackle today with strength and grace. Simple steps lead to big journeys.";
+    return "Good morning! Tackle today with strength and grace. Simple steps lead to big journeys.";
   }
 
   try {
     const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: "You are a personal assistant for a hardworking father named Isaac. Generate a short Daily Briefing (under 40 words). Include a very short encouraging Bible verse and a practical productivity or health tip for the day. Tone: Warm, professional, son-to-father. Sign it 'Love, Chris'.",
+      contents: `You are a personal assistant for Isaac (Dad).
+      
+      Context:
+      ${financialContext || 'Normal day.'}
+      
+      Generate a Daily Briefing (max 50 words).
+      Include:
+      1. A short, encouraging Bible verse.
+      2. A brief comment on the financial status (if provided).
+      3. A quick health or productivity tip.
+      
+      Tone: Warm, professional, son-to-father (Chris).`,
     });
 
     const text = response.text || "Have a blessed day, Dad! Stay hydrated and focused. Love, Chris";
-    saveToStorage(STORAGE_KEY_QUOTE, { date: today, text });
     return text;
   } catch (error) {
     console.error("Gemini API Error:", error);
@@ -48,17 +53,17 @@ export const getWelcomeBriefing = async (context: string): Promise<string> => {
       model: 'gemini-2.5-flash',
       contents: `You are 'Chris AI', the advanced OS for Isaac's device.
       
-      Context Data:
+      Real-time Data:
       ${context}
       
-      Generate a spoken briefing (approx 3-4 sentences).
-      Structure:
-      1. A short, powerful motivational quote or Bible verse.
-      2. A quick financial pulse check (mention the balance).
-      3. A summary of the most critical status (weather or tasks).
-      4. End with "Systems online."
+      Generate a spoken briefing script (approx 3-4 sentences).
+      Requirements:
+      1. Start with "Welcome back, Isaac." or "Systems online."
+      2. Mention the current financial balance clearly.
+      3. Mention the most urgent task or weather condition.
+      4. End with a short motivational quote or bible verse.
       
-      Tone: Sci-fi, capable, yet warm and encouraging.`,
+      Tone: Sci-fi, capable, yet warm and encouraging. Do not use markdown.`,
     });
     return response.text || "Welcome back, Isaac. Financials checked. Systems online.";
   } catch (e) {
@@ -101,7 +106,7 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
       model: 'gemini-2.5-flash-preview-tts',
       contents: { parts: [{ text }] },
       config: {
-        responseModalities: ['AUDIO'],
+        responseModalities: [Modality.AUDIO],
         speechConfig: {
           voiceConfig: {
             prebuiltVoiceConfig: { voiceName: 'Kore' }, // 'Kore' is a good, natural male voice
@@ -115,6 +120,7 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
     return base64Audio || null;
   } catch (error) {
     console.error("Gemini TTS Error:", error);
+    // Return null to signal the app to use fallback TTS
     return null;
   }
 };
