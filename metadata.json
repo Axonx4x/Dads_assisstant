@@ -1,0 +1,8 @@
+{
+  "name": "Dad's Assistant",
+  "description": "A simple, clean personal assistant app for Isaac to manage tasks, finances, and shopping, with daily motivation from Chris.",
+  "requestFramePermissions": [
+    "geolocation",
+    "microphone"
+  ]
+}
