@@ -1,4 +1,5 @@
 
+
 import React, { useState, useEffect, useRef } from 'react';
 import { Feature, Task, Transaction, ShoppingItem, Note, Contact, WeatherData, AppSettings } from './types';
 import { loadFromStorage, saveToStorage } from './services/storage';
@@ -12,8 +13,8 @@ import { Shopping } from './pages/Shopping';
 import { Notes } from './pages/Notes';
 import { Contacts } from './pages/Contacts';
 import { AIAssistant } from './components/AIAssistant';
-import { Sparkles, BellOff, AlertTriangle, X, Volume2, Mic, Zap, Info, Loader2 } from 'lucide-react';
-import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM, speakFallback, initializeAudio } from './services/sound';
+import { Sparkles, BellOff, AlertTriangle, X, Volume2, Mic, Zap, Info, Loader2, Power } from 'lucide-react';
+import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM, speakFallback, initializeAudio, isAudioContextSuspended } from './services/sound';
 
 const App: React.FC = () => {
   const [feature, setFeature] = useState<Feature>('dashboard');
@@ -29,10 +30,10 @@ const App: React.FC = () => {
   // Global Logic State
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [activeAlarmTask, setActiveAlarmTask] = useState<Task | null>(null);
-  const [welcomeStatus, setWelcomeStatus] = useState<'idle' | 'initializing' | 'speaking' | 'queued'>('idle');
-  const hasWelcomeRun = useRef(false);
+  const [welcomeStatus, setWelcomeStatus] = useState<'idle' | 'initializing' | 'speaking' | 'ready'>('idle');
+  const [showStartOverlay, setShowStartOverlay] = useState(false);
   
-  // Queue for audio if browser blocks autoplay
+  const hasWelcomeRun = useRef(false);
   const queuedAudioRef = useRef<string | null>(null);
 
   // Global Data State
@@ -42,30 +43,22 @@ const App: React.FC = () => {
   const [notes, setNotes] = useState<Note[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
 
-  // Initialize Global Audio on User Interaction
-  useEffect(() => {
-      const handleUserInteraction = () => {
-          initializeAudio();
-          // If we have a queued welcome message that was blocked, play it now
-          if (queuedAudioRef.current) {
-              setWelcomeStatus('speaking');
-              playPCM(queuedAudioRef.current).then(() => {
-                  setWelcomeStatus('idle');
-                  queuedAudioRef.current = null;
-              }).catch(() => {
-                  setWelcomeStatus('idle');
-              });
+  // Function to handle the first tap "System Initialization"
+  const handleSystemStart = async () => {
+      await initializeAudio();
+      setShowStartOverlay(false);
+      
+      if (queuedAudioRef.current) {
+          setWelcomeStatus('speaking');
+          try {
+            await playPCM(queuedAudioRef.current);
+          } catch(e) {
+            console.error("Playback failed after unlock", e);
           }
-      };
-      
-      window.addEventListener('click', handleUserInteraction, { once: true });
-      window.addEventListener('touchstart', handleUserInteraction, { once: true });
-      
-      return () => {
-          window.removeEventListener('click', handleUserInteraction);
-          window.removeEventListener('touchstart', handleUserInteraction);
-      };
-  }, []);
+          queuedAudioRef.current = null;
+          setWelcomeStatus('idle');
+      }
+  };
 
   // Load Data on Mount
   useEffect(() => {
@@ -81,7 +74,7 @@ const App: React.FC = () => {
     const savedSettings = loadFromStorage('app_settings', { enableWelcome: true, enableSfx: true });
     setSettings(savedSettings);
 
-    // Weather Fetch with Promise for the Welcome Race
+    // Weather Fetch with Promise
     const fetchWeather = async () => {
       if (navigator.geolocation) {
         return new Promise<WeatherData | null>((resolve) => {
@@ -101,21 +94,19 @@ const App: React.FC = () => {
     };
 
     // --- IMMEDIATE WELCOME LOGIC ---
-    // We run this inside the mount effect to ensure it starts ASAP
     if (savedSettings.enableWelcome && !hasWelcomeRun.current) {
         hasWelcomeRun.current = true;
         setWelcomeStatus('initializing');
 
         const runWelcomeSequence = async () => {
-            // 1. Wait for weather briefly (max 200ms) - Don't block if slow!
+            // 1. Wait for weather briefly (max 200ms)
             const weatherPromise = fetchWeather();
             const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 200));
             const initialWeather = await Promise.race([weatherPromise, timeoutPromise]);
 
-            // 2. Build Context immediately from loaded data
+            // 2. Build Context
             const urgentCount = loadedTasks.filter((t: Task) => t.priority === 'high' && !t.completed).length;
             const pendingCount = loadedTasks.filter((t: Task) => !t.completed).length;
-            
             const totalIncome = loadedTransactions.reduce((sum: number, t: Transaction) => t.type === 'income' ? sum + t.amount : sum, 0);
             const totalExpense = loadedTransactions.reduce((sum: number, t: Transaction) => t.type === 'expense' ? sum + t.amount : sum, 0);
             const balance = totalIncome - totalExpense;
@@ -128,45 +119,42 @@ const App: React.FC = () => {
             const context = `
                 Time: ${new Date().toLocaleTimeString()}.
                 Weather: ${weatherCtx}.
-                Urgent Objectives: ${urgentCount}.
-                Total Pending: ${pendingCount}.
-                Financial Balance: R${balance.toFixed(2)}.
+                Urgent: ${urgentCount}.
+                Pending: ${pendingCount}.
+                Balance: R${balance.toFixed(2)}.
             `;
 
-            // 3. Generate and Speak
+            // 3. Generate Audio
             try {
                 const text = await getWelcomeBriefing(context);
                 if (text) {
-                    setWelcomeStatus('speaking');
                     const audio = await generateSpeech(text);
                     if (audio) {
-                        // Try playing. If blocked, queue it.
-                        playPCM(audio).catch((e) => {
-                            if (e === "AudioContext suspended") {
-                                console.log("Audio blocked by autoplay policy. Queuing for first touch.");
-                                queuedAudioRef.current = audio;
-                                setWelcomeStatus('queued');
-                            } else {
-                                speakFallback(text);
-                            }
-                        });
+                        // Check if we need to unlock audio
+                        if (isAudioContextSuspended()) {
+                            console.log("Audio locked. Showing Start Overlay.");
+                            queuedAudioRef.current = audio;
+                            setShowStartOverlay(true);
+                            setWelcomeStatus('ready');
+                        } else {
+                            // Audio is already unlocked (rare on first load, but possible on reload sometimes)
+                            setWelcomeStatus('speaking');
+                            await playPCM(audio);
+                            setWelcomeStatus('idle');
+                        }
                     } else {
-                        // FALLBACK: Use browser TTS if Gemini fails
                         speakFallback(text);
+                        setWelcomeStatus('idle');
                     }
                 }
             } catch (e) {
                 console.error("Welcome sequence failed", e);
-            } finally {
-                if (!queuedAudioRef.current) {
-                    setWelcomeStatus(prev => prev === 'speaking' ? 'idle' : prev);
-                }
+                setWelcomeStatus('idle');
             }
         };
 
         runWelcomeSequence();
     } else {
-        // If welcome disabled, still fetch weather
         fetchWeather();
     }
   }, []);
@@ -183,7 +171,6 @@ const App: React.FC = () => {
         const diffMs = dueDateTime.getTime() - now.getTime();
         const diffMinutes = Math.floor(diffMs / 60000);
 
-        // 1. 15 Minute Warning (Upcoming)
         if (diffMinutes <= 15 && diffMinutes > 0 && !t.notifiedUpcoming) {
           if (settings.enableSfx) playNotificationSound();
           if ('Notification' in window && Notification.permission === 'granted') {
@@ -193,7 +180,6 @@ const App: React.FC = () => {
           return { ...t, notifiedUpcoming: true };
         }
 
-        // 2. Deadline Reached (Due Now)
         if (diffMs <= 0 && diffMs > -60000 && !t.notifiedDue) {
           if (t.hasAlarm && settings.enableSfx) {
              startAlarmLoop();
@@ -215,12 +201,12 @@ const App: React.FC = () => {
       if (updated) {
         setTasks(newTasks);
       }
-    }, 1000); // Check every second for better precision
+    }, 1000); 
 
     return () => clearInterval(timer);
   }, [tasks, settings.enableSfx]);
 
-  // Persist Data on Change
+  // Persist Data Logic...
   useEffect(() => saveToStorage('tasks', tasks), [tasks]);
   useEffect(() => saveToStorage('transactions', transactions), [transactions]);
   useEffect(() => saveToStorage('shopping', shoppingList), [shoppingList]);
@@ -264,32 +250,37 @@ const App: React.FC = () => {
              }}>
         </div>
         
-        {/* Background Ambient Glow */}
-        <div className="fixed top-0 left-0 w-full max-w-lg h-[500px] bg-gradient-to-b from-blue-900/20 via-cyan-900/10 to-transparent pointer-events-none z-0"></div>
+        {/* SYSTEM START OVERLAY (Fixes Autoplay Policy) */}
+        {showStartOverlay && (
+            <div className="fixed inset-0 z-[100] bg-slate-950 flex flex-col items-center justify-center cursor-pointer animate-in fade-in duration-500" onClick={handleSystemStart}>
+                <div className="relative">
+                    <div className="w-32 h-32 rounded-full border-2 border-cyan-500/30 animate-[spin_10s_linear_infinite]"></div>
+                    <div className="absolute inset-0 flex items-center justify-center">
+                        <Power size={48} className="text-cyan-400 animate-pulse" />
+                    </div>
+                    <div className="absolute -inset-4 border border-cyan-500/10 rounded-full animate-ping"></div>
+                </div>
+                <h1 className="mt-8 text-2xl font-hud font-bold text-white tracking-[0.3em] text-center">SYSTEM READY</h1>
+                <p className="mt-2 text-cyan-500/70 font-mono text-xs animate-pulse tracking-widest">[ TAP TO INITIALIZE ]</p>
+                
+                <div className="absolute bottom-10 text-slate-600 text-[10px] font-mono">
+                    SECURE CONNECTION ESTABLISHED
+                </div>
+            </div>
+        )}
 
-        {/* System Status Bar (Loading Indicator) */}
-        {welcomeStatus !== 'idle' && (
+        {/* System Status Bar */}
+        {(welcomeStatus === 'initializing' || welcomeStatus === 'speaking') && !showStartOverlay && (
              <div className="fixed top-0 left-0 right-0 z-[60] flex justify-center pt-2 pointer-events-none max-w-lg mx-auto">
                  <div className="bg-cyan-950/80 backdrop-blur-md border border-cyan-500/30 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.4)] animate-in slide-in-from-top-full duration-500">
-                     {welcomeStatus === 'initializing' ? (
-                         <Loader2 size={12} className="text-cyan-400 animate-spin" />
-                     ) : welcomeStatus === 'queued' ? (
-                         <div className="flex gap-1.5 items-center animate-pulse">
-                            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
-                            <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">TAP SCREEN TO CONNECT</span>
-                         </div>
-                     ) : (
-                         <div className="flex gap-1 h-2 items-center">
-                            <span className="w-0.5 h-2 bg-cyan-400 animate-pulse"></span>
-                            <span className="w-0.5 h-3 bg-cyan-400 animate-pulse delay-75"></span>
-                            <span className="w-0.5 h-2 bg-cyan-400 animate-pulse delay-150"></span>
-                         </div>
-                     )}
-                     {(welcomeStatus === 'initializing' || welcomeStatus === 'speaking') && (
-                        <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">
-                            {welcomeStatus === 'initializing' ? 'INITIALIZING VOICE SYSTEM...' : 'AUDIO TRANSMISSION...'}
-                        </span>
-                     )}
+                     <div className="flex gap-1 h-2 items-center">
+                        <span className="w-0.5 h-2 bg-cyan-400 animate-pulse"></span>
+                        <span className="w-0.5 h-3 bg-cyan-400 animate-pulse delay-75"></span>
+                        <span className="w-0.5 h-2 bg-cyan-400 animate-pulse delay-150"></span>
+                     </div>
+                     <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">
+                         {welcomeStatus === 'initializing' ? 'INITIALIZING VOICE SYSTEM...' : 'AUDIO TRANSMISSION...'}
+                     </span>
                  </div>
              </div>
         )}
@@ -326,16 +317,13 @@ const App: React.FC = () => {
         {activeAlarmTask && (
           <div className="fixed inset-0 z-[100] bg-red-950/90 backdrop-blur-md flex flex-col items-center justify-center p-8 animate-in fade-in zoom-in duration-300">
              <div className="absolute inset-0 border-[20px] border-red-500/20 animate-pulse"></div>
-             
              <div className="bg-slate-950 p-8 rounded-3xl border border-red-500 shadow-[0_0_50px_rgba(239,68,68,0.5)] text-center max-w-sm w-full relative z-10">
                 <div className="w-20 h-20 bg-red-500/20 rounded-full flex items-center justify-center mx-auto mb-6 animate-pulse shadow-[0_0_30px_#ef4444]">
                     <AlertTriangle size={40} className="text-red-500" />
                 </div>
                 <h2 className="text-3xl font-hud font-bold text-white mb-2 tracking-wider">ALERT</h2>
                 <p className="text-red-400 font-mono text-sm uppercase tracking-widest mb-6">Deadline Reached</p>
-                
                 <div className="text-xl text-white font-bold mb-8">"{activeAlarmTask.title}"</div>
-                
                 <button 
                   onClick={stopAlarm}
                   className="w-full py-4 bg-red-600 hover:bg-red-500 text-white font-bold font-hud rounded-xl text-xl tracking-widest shadow-[0_0_20px_rgba(239,68,68,0.4)] flex items-center justify-center gap-3 active:scale-95 transition-transform"
@@ -382,10 +370,18 @@ const App: React.FC = () => {
                                   <div className={`absolute top-1 w-4 h-4 rounded-full bg-white transition-all ${settings.enableSfx ? 'left-7' : 'left-1'}`}></div>
                               </button>
                           </div>
+                          
+                          <div className="p-3 bg-slate-800/30 rounded-xl border border-white/5 mt-4">
+                              <h4 className="text-xs font-bold text-cyan-500 uppercase mb-2 font-hud">Installation Guide</h4>
+                              <ul className="text-[10px] text-slate-400 space-y-2 list-disc pl-3">
+                                  <li><strong>iOS (iPhone):</strong> Tap Share (box with arrow) → Add to Home Screen.</li>
+                                  <li><strong>Android:</strong> Tap Menu (3 dots) → Install App / Add to Home Screen.</li>
+                              </ul>
+                          </div>
                       </div>
 
                       <div className="mt-6 pt-4 border-t border-white/10 text-center">
-                          <p className="text-[10px] text-slate-500 font-mono">DAD'S ASSISTANT V2.0 // CHRIS AI</p>
+                          <p className="text-[10px] text-slate-500 font-mono">DAD'S ASSISTANT V2.1 // CHRIS AI</p>
                       </div>
                  </div>
             </div>

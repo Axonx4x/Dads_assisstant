@@ -3,6 +3,10 @@
 // Web Audio API Context
 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
+export const isAudioContextSuspended = () => {
+    return audioCtx.state === 'suspended';
+};
+
 export const initializeAudio = async () => {
     if (audioCtx.state === 'suspended') {
         try {
