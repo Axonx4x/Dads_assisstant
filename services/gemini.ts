@@ -10,16 +10,34 @@ interface QuoteData {
   text: string;
 }
 
-export const getDailyMotivation = async (financialContext?: string): Promise<string> => {
-  // We disable caching to ensure real-time updates for weather/finance
-  // But we fallback to a safe default if API fails
+// --- API KEY HELPER ---
+// This ensures the app works in AI Studio, Local (Vite), and Vercel/Netlify
+const getApiKey = (): string | undefined => {
+  // 1. Check for Vite (Standard for local React dev)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+    // @ts-ignore
+    return import.meta.env.VITE_API_KEY;
+  }
   
-  if (!process.env.API_KEY) {
-    return "Good morning! Tackle today with strength and grace. Simple steps lead to big journeys.";
+  // 2. Check for standard process.env (AI Studio, Next.js, etc.)
+  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+    return process.env.API_KEY;
+  }
+
+  // 3. Fallback (Hardcoded for Dad's App usage)
+  return 'AIzaSyDp44IF2SW_MJXVWpnmWqoPRe3a39CJL44';
+};
+
+const API_KEY = getApiKey();
+
+export const getDailyMotivation = async (financialContext?: string): Promise<string> => {
+  if (!API_KEY) {
+    return "Good morning! (AI capabilities offline - Please configure API Key)";
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `You are a personal assistant for Isaac (Dad).
@@ -45,10 +63,10 @@ export const getDailyMotivation = async (financialContext?: string): Promise<str
 };
 
 export const getWelcomeBriefing = async (context: string): Promise<string> => {
-  if (!process.env.API_KEY) return "";
+  if (!API_KEY) return "";
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `You are 'Chris AI', the advanced OS for Isaac's device.
@@ -72,12 +90,12 @@ export const getWelcomeBriefing = async (context: string): Promise<string> => {
 };
 
 export const getAIAdvice = async (context: string, userQuery: string): Promise<string> => {
-  if (!process.env.API_KEY) {
-    return "I need an internet connection and API key to help you decide, Dad!";
+  if (!API_KEY) {
+    return "I need an API key to access my brain! Please configure it in the settings.";
   }
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
       contents: `You are 'Chris AI', a helpful, wise, and calm personal assistant for Isaac (Dad).
@@ -98,10 +116,10 @@ export const getAIAdvice = async (context: string, userQuery: string): Promise<s
 };
 
 export const generateSpeech = async (text: string): Promise<string | null> => {
-  if (!process.env.API_KEY) return null;
+  if (!API_KEY) return null;
 
   try {
-    const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+    const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-preview-tts',
       contents: { parts: [{ text }] },
