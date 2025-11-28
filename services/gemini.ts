@@ -31,6 +31,11 @@ const getApiKey = (): string | undefined => {
 
 const API_KEY = getApiKey();
 
+// Helper to remove markdown symbols that might mess up TTS
+const cleanTextForTTS = (text: string): string => {
+  return text.replace(/[*#_`]/g, '').trim();
+};
+
 export const getDailyMotivation = async (financialContext?: string): Promise<string> => {
   if (!API_KEY) {
     return "Good morning! (AI capabilities offline - Please configure API Key)";
@@ -69,21 +74,15 @@ export const getWelcomeBriefing = async (context: string): Promise<string> => {
     const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash',
-      contents: `You are 'Chris AI', the advanced OS for Isaac's device.
-      
-      Real-time Data:
-      ${context}
-      
-      Generate a spoken briefing script (approx 3-4 sentences).
-      Requirements:
-      1. Start with "Welcome back, Isaac." or "Systems online."
-      2. Mention the current financial balance clearly.
-      3. Mention the most urgent task or weather condition.
-      4. End with a short motivational quote or bible verse.
-      
-      Tone: Sci-fi, capable, yet warm and encouraging. Do not use markdown.`,
+      contents: `Role: 'Chris AI' OS for Isaac.
+      Data: ${context}
+      Task: Speak a SHORT briefing (2-3 sentences max).
+      1. "Welcome back, Isaac."
+      2. Mention Balance & Urgent Task.
+      3. Short Bible verse or quote.
+      No markdown. No asterisks.`,
     });
-    return response.text || "Welcome back, Isaac. Financials checked. Systems online.";
+    return cleanTextForTTS(response.text || "Welcome back, Isaac. Systems online.");
   } catch (e) {
     return "Welcome back. Systems online.";
   }
@@ -119,10 +118,11 @@ export const generateSpeech = async (text: string): Promise<string | null> => {
   if (!API_KEY) return null;
 
   try {
+    const cleanedText = cleanTextForTTS(text);
     const ai = new GoogleGenAI({ apiKey: API_KEY });
     const response = await ai.models.generateContent({
       model: 'gemini-2.5-flash-preview-tts',
-      contents: { parts: [{ text }] },
+      contents: { parts: [{ text: cleanedText }] },
       config: {
         responseModalities: [Modality.AUDIO],
         speechConfig: {

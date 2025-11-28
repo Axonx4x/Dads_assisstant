@@ -13,7 +13,7 @@ import { Notes } from './pages/Notes';
 import { Contacts } from './pages/Contacts';
 import { AIAssistant } from './components/AIAssistant';
 import { Sparkles, BellOff, AlertTriangle, X, Volume2, Mic, Zap, Info, Loader2 } from 'lucide-react';
-import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM, speakFallback } from './services/sound';
+import { startAlarmLoop, stopAlarmLoop, playNotificationSound, playPCM, speakFallback, initializeAudio } from './services/sound';
 
 const App: React.FC = () => {
   const [feature, setFeature] = useState<Feature>('dashboard');
@@ -29,8 +29,11 @@ const App: React.FC = () => {
   // Global Logic State
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [activeAlarmTask, setActiveAlarmTask] = useState<Task | null>(null);
-  const [welcomeStatus, setWelcomeStatus] = useState<'idle' | 'initializing' | 'speaking'>('idle');
+  const [welcomeStatus, setWelcomeStatus] = useState<'idle' | 'initializing' | 'speaking' | 'queued'>('idle');
   const hasWelcomeRun = useRef(false);
+  
+  // Queue for audio if browser blocks autoplay
+  const queuedAudioRef = useRef<string | null>(null);
 
   // Global Data State
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -38,6 +41,31 @@ const App: React.FC = () => {
   const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
   const [notes, setNotes] = useState<Note[]>([]);
   const [contacts, setContacts] = useState<Contact[]>([]);
+
+  // Initialize Global Audio on User Interaction
+  useEffect(() => {
+      const handleUserInteraction = () => {
+          initializeAudio();
+          // If we have a queued welcome message that was blocked, play it now
+          if (queuedAudioRef.current) {
+              setWelcomeStatus('speaking');
+              playPCM(queuedAudioRef.current).then(() => {
+                  setWelcomeStatus('idle');
+                  queuedAudioRef.current = null;
+              }).catch(() => {
+                  setWelcomeStatus('idle');
+              });
+          }
+      };
+      
+      window.addEventListener('click', handleUserInteraction, { once: true });
+      window.addEventListener('touchstart', handleUserInteraction, { once: true });
+      
+      return () => {
+          window.removeEventListener('click', handleUserInteraction);
+          window.removeEventListener('touchstart', handleUserInteraction);
+      };
+  }, []);
 
   // Load Data on Mount
   useEffect(() => {
@@ -79,13 +107,12 @@ const App: React.FC = () => {
         setWelcomeStatus('initializing');
 
         const runWelcomeSequence = async () => {
-            // 1. Wait for weather briefly (max 1.5s) to try and get context, but don't block forever
+            // 1. Wait for weather briefly (max 200ms) - Don't block if slow!
             const weatherPromise = fetchWeather();
-            const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 1500));
+            const timeoutPromise = new Promise<null>(resolve => setTimeout(() => resolve(null), 200));
             const initialWeather = await Promise.race([weatherPromise, timeoutPromise]);
 
-            // 2. Build Context immediately from loaded data (or direct storage if state isn't ready)
-            // We use the variables we just loaded to be safe
+            // 2. Build Context immediately from loaded data
             const urgentCount = loadedTasks.filter((t: Task) => t.priority === 'high' && !t.completed).length;
             const pendingCount = loadedTasks.filter((t: Task) => !t.completed).length;
             
@@ -113,16 +140,27 @@ const App: React.FC = () => {
                     setWelcomeStatus('speaking');
                     const audio = await generateSpeech(text);
                     if (audio) {
-                        await playPCM(audio);
+                        // Try playing. If blocked, queue it.
+                        playPCM(audio).catch((e) => {
+                            if (e === "AudioContext suspended") {
+                                console.log("Audio blocked by autoplay policy. Queuing for first touch.");
+                                queuedAudioRef.current = audio;
+                                setWelcomeStatus('queued');
+                            } else {
+                                speakFallback(text);
+                            }
+                        });
                     } else {
-                        // FALLBACK: Use browser TTS if Gemini fails (e.g. 403 error)
+                        // FALLBACK: Use browser TTS if Gemini fails
                         speakFallback(text);
                     }
                 }
             } catch (e) {
                 console.error("Welcome sequence failed", e);
             } finally {
-                setWelcomeStatus('idle');
+                if (!queuedAudioRef.current) {
+                    setWelcomeStatus(prev => prev === 'speaking' ? 'idle' : prev);
+                }
             }
         };
 
@@ -156,7 +194,7 @@ const App: React.FC = () => {
         }
 
         // 2. Deadline Reached (Due Now)
-        if (diffMinutes <= 0 && diffMinutes > -5 && !t.notifiedDue) {
+        if (diffMs <= 0 && diffMs > -60000 && !t.notifiedDue) {
           if (t.hasAlarm && settings.enableSfx) {
              startAlarmLoop();
              setActiveAlarmTask(t);
@@ -177,7 +215,7 @@ const App: React.FC = () => {
       if (updated) {
         setTasks(newTasks);
       }
-    }, 10000); // Check every 10 seconds
+    }, 1000); // Check every second for better precision
 
     return () => clearInterval(timer);
   }, [tasks, settings.enableSfx]);
@@ -235,6 +273,11 @@ const App: React.FC = () => {
                  <div className="bg-cyan-950/80 backdrop-blur-md border border-cyan-500/30 px-4 py-1.5 rounded-full flex items-center gap-2 shadow-[0_0_15px_rgba(6,182,212,0.4)] animate-in slide-in-from-top-full duration-500">
                      {welcomeStatus === 'initializing' ? (
                          <Loader2 size={12} className="text-cyan-400 animate-spin" />
+                     ) : welcomeStatus === 'queued' ? (
+                         <div className="flex gap-1.5 items-center animate-pulse">
+                            <span className="w-2 h-2 rounded-full bg-cyan-400"></span>
+                            <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">TAP SCREEN TO CONNECT</span>
+                         </div>
                      ) : (
                          <div className="flex gap-1 h-2 items-center">
                             <span className="w-0.5 h-2 bg-cyan-400 animate-pulse"></span>
@@ -242,9 +285,11 @@ const App: React.FC = () => {
                             <span className="w-0.5 h-2 bg-cyan-400 animate-pulse delay-150"></span>
                          </div>
                      )}
-                     <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">
-                         {welcomeStatus === 'initializing' ? 'INITIALIZING VOICE SYSTEM...' : 'AUDIO TRANSMISSION...'}
-                     </span>
+                     {(welcomeStatus === 'initializing' || welcomeStatus === 'speaking') && (
+                        <span className="text-[9px] font-bold font-hud text-cyan-300 tracking-widest uppercase">
+                            {welcomeStatus === 'initializing' ? 'INITIALIZING VOICE SYSTEM...' : 'AUDIO TRANSMISSION...'}
+                        </span>
+                     )}
                  </div>
              </div>
         )}

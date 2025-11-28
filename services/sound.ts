@@ -3,10 +3,20 @@
 // Web Audio API Context
 const audioCtx = new (window.AudioContext || (window as any).webkitAudioContext)();
 
+export const initializeAudio = async () => {
+    if (audioCtx.state === 'suspended') {
+        try {
+            await audioCtx.resume();
+        } catch (e) {
+            console.error("Audio resume failed", e);
+        }
+    }
+};
+
 const playTone = (freq: number, type: OscillatorType, duration: number, delay = 0) => {
   if (audioCtx.state === 'suspended') {
-    // Attempt to resume if suspended
-    audioCtx.resume().catch(e => console.warn("Audio Context resume failed (interaction required)", e));
+    // Attempt to resume if suspended - usually requires user interaction
+    audioCtx.resume().catch(e => {});
   }
   
   const osc = audioCtx.createOscillator();
@@ -15,7 +25,9 @@ const playTone = (freq: number, type: OscillatorType, duration: number, delay = 
   osc.type = type;
   osc.frequency.setValueAtTime(freq, audioCtx.currentTime + delay);
   
-  gain.gain.setValueAtTime(0.1, audioCtx.currentTime + delay);
+  // Volume control
+  const volume = 0.5; // Increased volume
+  gain.gain.setValueAtTime(volume, audioCtx.currentTime + delay);
   gain.gain.exponentialRampToValueAtTime(0.00001, audioCtx.currentTime + delay + duration);
 
   osc.connect(gain);
@@ -116,40 +128,45 @@ function base64ToArrayBuffer(base64: string) {
   return bytes.buffer;
 }
 
-export const playPCM = async (base64Audio: string) => {
-  try {
-    // Explicitly resume context for reliable playback
-    if (audioCtx.state === 'suspended') {
-      await audioCtx.resume();
-    }
-
-    const arrayBuffer = base64ToArrayBuffer(base64Audio);
+export const playPCM = async (base64Audio: string): Promise<void> => {
+  // Return promise to allow caller to handle suspended state rejection
+  return new Promise(async (resolve, reject) => {
+      try {
+        // Explicitly resume context for reliable playback
+        if (audioCtx.state === 'suspended') {
+          try {
+              await audioCtx.resume();
+          } catch(e) {
+              // If resume fails (no user interaction), we reject so App can queue it
+              reject("AudioContext suspended");
+              return;
+          }
+        }
     
-    // Gemini 2.5 TTS uses 24000Hz sample rate usually, but we need to decode raw PCM manually 
-    // because it has no WAV header.
-    // The Gemini API returns raw PCM.
-    // Let's assume Int16 little-endian, mono, 24kHz (standard for Gemini output)
+        const arrayBuffer = base64ToArrayBuffer(base64Audio);
+        const dataView = new DataView(arrayBuffer);
+        const numChannels = 1;
+        const sampleRate = 24000;
+        const pcmData = new Int16Array(arrayBuffer);
+        const float32Data = new Float32Array(pcmData.length);
+        
+        // Convert Int16 to Float32
+        for (let i = 0; i < pcmData.length; i++) {
+           float32Data[i] = pcmData[i] / 32768.0;
+        }
     
-    const dataView = new DataView(arrayBuffer);
-    const numChannels = 1;
-    const sampleRate = 24000;
-    const pcmData = new Int16Array(arrayBuffer);
-    const float32Data = new Float32Array(pcmData.length);
+        const audioBuffer = audioCtx.createBuffer(numChannels, float32Data.length, sampleRate);
+        audioBuffer.getChannelData(0).set(float32Data);
     
-    // Convert Int16 to Float32
-    for (let i = 0; i < pcmData.length; i++) {
-       float32Data[i] = pcmData[i] / 32768.0;
-    }
-
-    const audioBuffer = audioCtx.createBuffer(numChannels, float32Data.length, sampleRate);
-    audioBuffer.getChannelData(0).set(float32Data);
-
-    const source = audioCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(audioCtx.destination);
-    source.start();
-
-  } catch (e) {
-    console.error("Error playing PCM audio", e);
-  }
+        const source = audioCtx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(audioCtx.destination);
+        source.onended = () => resolve();
+        source.start();
+    
+      } catch (e) {
+        console.error("Error playing PCM audio", e);
+        reject(e);
+      }
+  });
 };
